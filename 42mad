@@ -56,10 +56,10 @@ if [ "$puser" != "" ]; then
     log_msg 2 "PD config successfully downloaded"
     chmod 660 "$pdconf" && chown "$puser":"$puser" "$pdconf"
     # I dunno, sleep and launch it and hope its all good
-    sleep 5
+    sleep 10
     set_permissions_pd
     monkey -p com.mad.pogodroid 1
-    sleep 10
+    sleep 20
 else
     log_msg 4 "Unable to find PD user"
 fi
@@ -229,14 +229,14 @@ while ! $registered; do
         else
             log_msg 2 "No changes required for RGC"
         fi
+        if [[ "$reboot_install" -eq 1 ]]; then
+            reboot_box
+        fi
         # Login to google account
         if [[ ! "$(grep 'com.android.contacts"' /data/system/sync/accounts.xml | cut -d'"' -f8)" ]]; then
             autoconf_process_google
         else
             log_msg 2 "Google account already setup"
-        fi
-        if [[ "$reboot_install" -eq 1 ]]; then
-            reboot_box
         fi
         # PoGo Initialization
         if [ ! $(pm list packages com.nianticlabs.pokemongo) ]; then
@@ -252,7 +252,6 @@ while ! $registered; do
         if [ -f "$rgcconf" ] && [ -f "$pdconf" ]; then
             log_msg 2 "All steps done.  Attempting to remove session"
             rm /sdcard/reg_session
-            sh -x /system/bin/update_mad.sh -n
         else
             log_msg 3 "Missing one or more required configuration files"
             reboot_required=1
@@ -564,7 +563,7 @@ fi
 wait_for_network(){
 echo "Waiting for network"
 until ping -c1 8.8.8.8 >/dev/null 2>/dev/null; do
-    "No network detected.  Sleeping 10s"
+    echo "No network detected.  Sleeping 10s"
     sleep 10
 done
 echo "Network connection detected"
@@ -586,46 +585,64 @@ log_msg 2 "Magisk repackaging has started"
 fi
 }
 
+validate_mac() {
+status=$(/system/bin/curl -s -k -L -o /dev/null -w "%{http_code}" --user "$pdauth" -H "origin: $origin" "${pdserver}/autoconfig/mymac")
+if [ $status -eq 200 ]; then
+    # TODO - Determine why it was writing everything to one line instead of two even when enclosing in quotes
+    /system/bin/curl -o /sdcard/mac_from_mad -s -k -L --user "$pdauth" -H "origin: $origin" "${pdserver}/autoconfig/mymac"
+    log_msg 2 "Recieved macs ${all_macs}"
+    # TODO - Handle WLAN mac through $interface
+    interface=$(sed -n 1p /sdcard/mac_from_mad)
+    mac=$(sed -n 2p /sdcard/mac_from_mad)
+    current_mac=$(ifconfig eth0|awk '/HWaddr/{print $5}')
+    rm /sdcard/mac_from_mad
+    echo "MAD-assigned MAC: \"$mac\""
+    echo "Current MAC: \"$current_mac\""
+    if [[ "$mac" == "" ]]; then
+        log_msg 2 "No mac specified.  Determining if a new MAC needs to be generated"
+        # Not sure this is needed with the 64bit rom
+        if [[ "$current_mac" == "00:15:18:01:81:31" ]] ;then
+            log_msg 2 "Invalid MAC found.  Generating a new one"
+            current_mac=$(xxd -l 6 -p /dev/urandom |sed 's/../&:/g;s/:$//')
+            set_mac_address "$current_mac"
+            /system/bin/curl -s -k -L --user "$pdauth" -H 'Content-Type: text/plain' -H "origin: $origin" "${pdserver}/autoconfig/mymac" -d "$current_mac"
+            reboot_required=1
+        fi
+        log_msg 2 "Setting MAC address for the origin to $current_mac"
+        /system/bin/curl -s -k -L -v --user "$pdauth" -H 'Content-Type: text/plain' -H "origin: $origin" "${pdserver}/autoconfig/mymac" -d "$current_mac"
+    elif [[ "$mac" != "$current_mac" ]]; then
+        set_mac_address "$mac"
+        reboot_required=1
+    fi
+fi
+if [[ "$reboot_required" -eq 1 ]]; then
+reboot_box
+fi
+}
+
 wait_for_network
 autoconf_set_vars
 if ([ ! -f /sbin/magisk ] ||  [ ! $(pm list packages android.vending) ]) || [[ -f /sdcard/reg_session ]]; then
     autoreg_get_session
 fi
-echo "$madver" > /sdcard/madversion
+if [[ "$origin" != "" ]]; then
+    validate_mac
+fi
+if [ -f "$rgcconf" ]; then
+    log_msg 1 "RGConf present"
+fi
+if [ -f "$pdconf" ]; then
+    log_msg 1 "PD present"
+fi
+if [ ! -f /sdcard/reg_session ]; then
+    log_msg 1 "Session present"
+fi
 mount -o remount,rw /system
 core_installation
+echo "$madver" > /sdcard/madversion
 set_android_settings
-if [[ "$origin" != "" ]] && [[ "$pdserver" != "" ]] && [[ "$pdauth" != "" ]] && [ -f "$rgcconf" ] && [ -f "$pdconf" ] && [ ! -f /sdcard/reg_session ]; then
-    status=$(/system/bin/curl -s -k -L -o /dev/null -w "%{http_code}" --user "$pdauth" -H "origin: $origin" "${pdserver}/autoconfig/mymac")
-    if [ $status -eq 200 ]; then
-        all_macs=$(/system/bin/curl -s -k -L --user "$pdauth" -H "origin: $origin" "${pdserver}/autoconfig/mymac")
-        # TODO - Handle WLAN mac through $interface
-        interface=$(echo $all_macs | sed -n 1p)
-        mac=$(echo $all_macs | sed -n 2p)
-        current_mac=$(ifconfig eth0|awk '/HWaddr/{print $5}')
-        echo "MAD-assigned MAC: \"$mac\""
-        echo "Current MAC: \"$current_mac\""
-        if [[ "$mac" == "" ]]; then
-            log_msg 2 "No mac specified.  Determining if a new MAC needs to be generated"
-            # Not sure this is needed with the 64bit rom
-            if [[ "$current_mac" == "00:15:18:01:81:31" ]] ;then
-                current_mac=$(xxd -l 6 -p /dev/urandom |sed 's/../&:/g;s/:$//')
-                set_mac_address "$current_mac"
-                /system/bin/curl -s -k -L --user "$pdauth" -H 'Content-Type: text/plain' -H "origin: $origin" "${pdserver}/autoconfig/mymac" -d "$current_mac"
-                reboot_box
-            fi
-            /system/bin/curl -s -k -L -v --user "$pdauth" -H 'Content-Type: text/plain' -H "origin: $origin" "${pdserver}/autoconfig/mymac" -d "$current_mac"
-            requires_autoconf=0
-        elif [[ "$mac" != "$current_mac" ]]; then
-            set_mac_address "$mac"
-            reboot_box
-        else
-            requires_autoconf=0
-        fi
-    fi
-fi
 
-if [[ "$requires_autoconf" -eq 1 ]]; then
+if [ ! -f "$rgcconf" ] || [ ! -f "$pdconf" ] || [[ -f /sdcard/reg_session ]]; then
 autoconf_set_vars
 autoconf_register
 fi
