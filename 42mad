@@ -276,18 +276,16 @@ if [[ -f "$pdconf" ]] ;then
     pduser="$(grep -v raw "$pdconf"|awk -F'>' '/auth_username/{print $2}'|awk -F'<' '{print $1}')"
     pdpass="$(grep -v raw "$pdconf"|awk -F'>' '/auth_password/{print $2}'|awk -F'<' '{print $1}')"
     pdauth="$pduser:$pdpass"
-elif [[ -f /data/local/pdconf ]] ;then
-    origin="$(awk -F'>' '/post_origin/{print $2}' /data/local/pdconf|awk -F'<' '{print $1}')"
-    pdserver="$(grep -v raw /data/local/pdconf|awk -F'>' '/post_destination/{print $2}'|awk -F'<' '{print $1}')"
-    pduser="$(grep -v raw /data/local/pdconf|awk -F'>' '/auth_username/{print $2}'|awk -F'<' '{print $1}')"
-    pdpass="$(grep -v raw /data/local/pdconf|awk -F'>' '/auth_password/{print $2}'|awk -F'<' '{print $1}')"
-    pdauth="$pduser:$pdpass"
+elif ! [[ -f /sdcard/reg_session ]] ;then
+    session_id=$(awk 'NR==1{print $1'} /sdcard/reg_session)
+    pdserver=$(awk 'NR==2{print $1'} /sdcard/reg_session)
+    pdauth=$(awk 'NR==3{print $1'} /sdcard/reg_session)
     check_session
 else
     echo "Loading config from USB"
     usbfile="$(find /mnt/media_rw/ -name mad_autoconf.txt|head -n1)"
     attempt=0
-    while [[ "$usbfile" ]] || (( attempt < usb_max_wait )); do
+    while ! [[ "$usbfile" ]] && (( attempt < usb_max_wait )); do
         usbfile="$(find /mnt/media_rw/ -name mad_autoconf.txt|head -n1)"
         attempt=$((attempt+1))
         sleep 1
@@ -296,8 +294,8 @@ else
         pdserver="$(awk 'NR==1{print $1}' "$usbfile")"
         pdauth="$(awk 'NR==2{print $1}' "$usbfile")"
         check_session
+        echo -e "$session_id\n$pdserver\n$pdauth" > /sdcard/reg_session
         origin=$(/system/bin/curl -s -k -L --user "$pdauth" "${pdserver}/autoconfig/${session_id}/origin")
-        /system/bin/curl -s -k -L -o "/data/local/pdconf" --user "$pdauth" "${pdserver}/autoconfig/${session_id}/pd"
         checkmac
         echo "Installing the apps from the wizard"
         if ! grep -q "version $uver" /system/bin/update_mad.sh; then
@@ -341,7 +339,6 @@ if [[ "$puser" ]] && [[ "$pdauth" ]] && [[ -d "$pdir" ]] && ! [[ -f "$pdconf" ]]
     fi
     /system/bin/curl -s -k -L -o "$pdconf" --user "$pdauth" "${pdserver}/autoconfig/${session_id}/pd"
     chmod 660 "$pdconf" && chown "$puser":"$puser" "$pdconf"
-    rm -f /data/local/pdconf
 fi
 if [[ "$puser" ]] && [[ "$pdauth" ]] && [[ -d "$rgcdir" ]] && ! [[ -f "$rgcconf" ]] ;then
     if [[ ! -d "$rgcdir/shared_prefs" ]] ;then
